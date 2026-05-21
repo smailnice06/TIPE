@@ -8,6 +8,7 @@ import ctypes
 import os
 import hashlib
 import concurrent.futures
+import multiprocessing
 
 # =========================================================
 # -------- IMPORT DE LA LIBRAIRIE C (GMP) -----------------
@@ -73,43 +74,50 @@ def inverse_modulaire(a, m):
     if x < 0: x = x + m0
     return x
 
+def worker_recherche_premier(taille_bits, queue):
+    try:
+        # On lance la recherche classique
+        premier = generer_grand_premier(taille_bits)
+        # On met le résultat dans le "tuyau" (Queue) partagé
+        queue.put(premier)
+    except Exception:
+        pass
+
+
 def generer_cles_bavardes(taille_bits):
-    # On détecte automatiquement le nombre de cœurs de la machine (4 sur un Raspberry Pi)
     nb_coeurs = os.cpu_count() or 4
-    print(f" -> [MULTICORE] Lancement de la meute : {nb_coeurs} cœurs cherchent p et q...")
+    print(f" -> [MULTICORE] Lancement agressif : {nb_coeurs} cœurs sur la ligne de départ...")
     
+    # Un "tuyau" de communication thread-safe pour récupérer les résultats
+    queue = multiprocessing.Queue()
+    processus_actifs = []
+    
+    # 1. On lâche les loups
+    for _ in range(nb_coeurs):
+        p = multiprocessing.Process(target=worker_recherche_premier, args=(taille_bits, queue))
+        p.start()
+        processus_actifs.append(p)
+        
     primes_found = []
     
-    with concurrent.futures.ProcessPoolExecutor(max_workers=nb_coeurs) as executor:
-        # On lance volontairement plus de tâches qu'il n'y a de cœurs (ex: 8 tâches pour 4 cœurs)
-        # pour s'assurer que si un cœur finit vite, il reprenne immédiatement une nouvelle recherche
-        futures = [executor.submit(generer_grand_premier, taille_bits) for _ in range(nb_coeurs * 2)]
-        
-        # as_completed nous donne les résultats dès qu'un cœur a fini, peu importe l'ordre !
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                premier = future.result()
-                
-                # On s'assure de ne pas avoir tiré deux fois le même nombre exact (statistiquement impossible mais prudence)
-                if premier not in primes_found:
-                    primes_found.append(premier)
-                    print(f"    [+] Un cœur a trouvé un nombre premier ! ({len(primes_found)}/2)")
-                
-                # Dès qu'on a nos DEUX nombres (p et q), on arrête tout
-                if len(primes_found) == 2:
-                    # On annule toutes les autres tâches qui étaient dans la file d'attente
-                    for f in futures:
-                        f.cancel()
-                    break # On casse la boucle pour passer à la suite
-                    
-            except Exception as e:
-                print(f"Erreur sur un cœur : {e}")
+    # 2. On attend sagement à la sortie du tuyau
+    while len(primes_found) < 2:
+        # L'exécution bloque ici jusqu'à ce qu'un coeur pousse un nombre dans le tuyau
+        candidat = queue.get() 
+        if candidat not in primes_found:
+            primes_found.append(candidat)
+            print(f"    [+] Victoire d'un cœur ! ({len(primes_found)}/2)")
 
-    # On assigne p et q
+    # 3. L'EXECUTION SYSTÈME (On tire la prise des retardataires)
+    for p in processus_actifs:
+        p.terminate() # Envoie un SIGTERM brutal au système d'exploitation
+        p.join()      # Attend la confirmation de la mort du processus
+        
+    print(" -> [MULTICORE] Les retardataires ont été coupés. Calcul de la clé RSA...")
+    
+    # On assigne p et q avec nos deux gagnants
     p = primes_found[0]
     q = primes_found[1]
-    
-    print(" -> [MULTICORE] p et q validés. Calcul de la clé RSA...")
     
     n = p * q
     phi = (p - 1) * (q - 1)
@@ -126,6 +134,7 @@ def generer_cles_bavardes(taille_bits):
     cle_publique = (e, n)
     cle_privee = (d, n, p, q, dp, dq, qinv)
     return (cle_publique, cle_privee)
+    
 
 def pad_message(message_str, n_bits):
     message_bytes = message_str.encode('utf-8')
