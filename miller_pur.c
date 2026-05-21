@@ -11,6 +11,8 @@ int miller_rabin_custom_gmp(const char* n_str, int k) {
     
     int resultat = 1; // On suppose que le nombre est premier au départ
 
+    
+
     // 2. Conversion du texte Python en grand entier GMP
     if (mpz_set_str(n, n_str, 10) != 0) {
         mpz_clears(n, n_minus_1, d, a, x, range, NULL);
@@ -21,6 +23,29 @@ int miller_rabin_custom_gmp(const char* n_str, int k) {
     if (mpz_cmp_ui(n, 2) < 0) { resultat = 0; goto cleanup; }
     if (mpz_cmp_ui(n, 2) == 0 || mpz_cmp_ui(n, 3) == 0) { resultat = 1; goto cleanup; }
     if (mpz_even_p(n)) { resultat = 0; goto cleanup; } // Si c'est pair, c'est mort
+
+    // --- FILTRE RAPIDE (TRIAL DIVISION) ---
+    // Les 25 premiers nombres premiers (pour éliminer ~75% des nombres non-premiers)
+    const unsigned long petits_premiers[] = {
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 
+        43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97
+    };
+    int nb_petits_premiers = sizeof(petits_premiers) / sizeof(petits_premiers[0]);
+
+    for (int i = 0; i < nb_petits_premiers; i++) {
+        // mpz_divisible_ui_p renvoie >0 si n est divisible par le petit premier
+        if (mpz_divisible_ui_p(n, petits_premiers[i])) {
+            // Si n == petit_premier, c'est qu'il est premier
+            if (mpz_cmp_ui(n, petits_premiers[i]) == 0) {
+                resultat = 1;
+            } else {
+                resultat = 0; // Il est divisible, donc composé !
+            }
+            goto cleanup; // On quitte immédiatement, on a gagné un temps fou !
+        }
+    }
+    // Si on arrive ici, le nombre n'est divisible par aucun petit nombre premier.
+    // ON PEUT ENFIN LANCER MILLER-RABIN !
 
     // --- ÉTAPE 1 : Décomposition de n-1 = d * 2^r ---
     mpz_sub_ui(n_minus_1, n, 1); // n_minus_1 = n - 1
