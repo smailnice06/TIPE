@@ -7,6 +7,7 @@ from cypari2 import Pari
 import ctypes
 import os
 import hashlib
+import concurrent.futures
 
 # =========================================================
 # -------- IMPORT DE LA LIBRAIRIE C (GMP) -----------------
@@ -72,10 +73,21 @@ def inverse_modulaire(a, m):
     return x
 
 def generer_cles_bavardes(taille_bits):
-    p = generer_grand_premier(taille_bits)
-    q = generer_grand_premier(taille_bits)
+    print(f" -> [MULTICORE] Lancement de la recherche de p et q en parallèle...")
     
-    while p == q: q = generer_grand_premier(taille_bits)
+    # On ouvre un "Pool" de 2 travailleurs (2 cœurs physiques)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=2) as executor:
+        # On donne l'ordre aux deux cœurs de lancer la fonction en même temps
+        future_p = executor.submit(generer_grand_premier, taille_bits)
+        future_q = executor.submit(generer_grand_premier, taille_bits)
+        
+        # On attend que les deux cœurs aient fini leur travail
+        p = future_p.result()
+        q = future_q.result()
+    
+    # Sécurité statistique (très rare) : si par miracle les deux cœurs ont trouvé le même
+    while p == q: 
+        q = generer_grand_premier(taille_bits)
     
     n = p * q
     phi = (p - 1) * (q - 1)

@@ -15,13 +15,8 @@ pipe_write = [0xE1, 0xF0, 0xF0, 0xF0, 0xF0]
 pipe_read  = [0xD2, 0xF0, 0xF0, 0xF0, 0xF0]
 # =======================================================
 
-chat = SecureNRFChat(pipe_write, pipe_read)
-
-def quand_message_radio_recu(texte_clair):
-    print(f"\n[RÉCEPTION RADIO] Message validé et déchiffré : {texte_clair}")
-    socketio.emit("new_message", {"pseudo": "Correspondant distant", "message": texte_clair})
-
-chat.on_receive = quand_message_radio_recu
+# 1. PRÉPARATION DE LA VARIABLE GLOBALE À VIDE (Bouclier macOS)
+chat = None
 
 # --- Routes Web ---
 @app.route("/")
@@ -30,6 +25,10 @@ def index():
 
 @socketio.on("connect")
 def handle_connect():
+    # Sécurité pour les processus enfants qui n'ont pas de chat initialisé
+    if chat is None: 
+        return 
+        
     etat_materiel = {
         "nrf24_connected": chat.radio is not None,
         "mode": chat.sim_mode,
@@ -78,6 +77,10 @@ def run_benchmark():
 # --- Routes WebSocket (Chat) ---
 @socketio.on("send_message")
 def handle_send_message(data):
+    # Sécurité supplémentaire
+    if chat is None:
+        return
+
     text = data.get("message")
     pseudo = data.get("pseudo", "Anonyme")
 
@@ -107,6 +110,18 @@ def handle_send_message(data):
         except Exception as e:
             print(f"Erreur transmission : {e}")
 
+# 2. LE BOUCLIER MULTICŒUR EST ICI
 if __name__ == "__main__":
-    # Pour lancer directement sans gunicorn, vous pouvez simplement faire python app.py
+    # Ce bloc n'est lu que par le lancement initial de l'utilisateur.
+    # Les processus enfants de macOS s'arrêteront de lire avant d'entrer ici.
+    
+    chat = SecureNRFChat(pipe_write, pipe_read)
+
+    def quand_message_radio_recu(texte_clair):
+        print(f"\n[RÉCEPTION RADIO] Message validé et déchiffré : {texte_clair}")
+        socketio.emit("new_message", {"pseudo": "Correspondant distant", "message": texte_clair})
+
+    chat.on_receive = quand_message_radio_recu
+
+    # Lancement du serveur Web
     socketio.run(app, host="0.0.0.0", port=5001, allow_unsafe_werkzeug=True)
