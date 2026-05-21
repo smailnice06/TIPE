@@ -123,5 +123,17 @@ if __name__ == "__main__":
 
     chat.on_receive = quand_message_radio_recu
 
+    # -- NOUVEAU : Gestion du Handshake Web <-> Radio --
+    def quand_cle_recue():
+        empreinte = chat.get_fingerprint(chat.remote_public_key)
+        socketio.emit("update_fingerprint", {"empreinte_distante": empreinte})
+
+    chat.on_key_received = quand_cle_recue
+
+    @socketio.on("trigger_handshake")
+    def handle_handshake():
+        if chat is not None:
+            chat.send_public_key()
+
     # Lancement du serveur Web
     socketio.run(app, host="0.0.0.0", port=5001, allow_unsafe_werkzeug=True)

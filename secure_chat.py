@@ -156,9 +156,13 @@ class SecureNRFChat:
         self.radio = None
         self.sim_mode = "hardware" 
         self.seq_send = 0
-        self.key_exchange_done = False
-        self.fragments = []
+        
+        # Séparation des buffers pour ne pas mélanger le texte et les clés
+        self.msg_fragments = []
+        self.key_fragments = []
+        
         self.on_receive = None  
+        self.on_key_received = None # Nouvel écouteur pour l'interface web
 
         # -------- INITIALISATION RADIO ----------
         try:
@@ -188,27 +192,34 @@ class SecureNRFChat:
             print("[INFO] Matériel NRF24 détecté et initialisé.")
 
         except Exception as e:
-            import traceback
-            print("\n--- [DÉTAIL DU CRASH MATÉRIEL] ---")
-            traceback.print_exc()
-            print("----------------------------------\n")
             print("[AVERTISSEMENT] Pas d'antenne NRF24 (mode simulation activé).")
             self.radio = None
             self.sim_mode = "sim_crypto"
 
-        print("[INFO] Génération des clés RSA (1024 bits) pour le module de chat...")
-        self.prime_bits = 512 
+        print("[INFO] Génération des clés RSA pour le module de chat...")
+        self.prime_bits = 512 # Correspond à RSA-1024
         cles = generer_cles_bavardes(self.prime_bits)
         self.public_key = cles[0]
         self.private_key = cles[1]
-        self.remote_public_key = self.public_key 
+        
+        # Au démarrage, on n'a plus de fausse clé, on la met à None
+        self.remote_public_key = None 
         print("[INFO] Clés générées. Chat prêt.")
 
         if self.radio is not None:
             self.receiver_thread = threading.Thread(target=self._receive_messages, daemon=True)
             self.receiver_thread.start()
 
+    def get_fingerprint(self, key):
+        if not key: return "EN ATTENTE"
+        import hashlib
+        key_str = f"{key[0]}||{key[1]}"
+        hash_complet = hashlib.sha256(key_str.encode('utf-8')).hexdigest()
+        return hash_complet[:8].upper()
+
     def encrypt(self, message: str) -> bytes:
+        if not self.remote_public_key:
+            raise ValueError("Impossible de chiffrer : Aucune clé distante reçue !")
         cle_distante_tuple = (self.remote_public_key, None)
         c_int = chiffrer(message, self.prime_bits * 2, cle_distante_tuple)
         return c_int.to_bytes((self.prime_bits * 2) // 8, 'big')
@@ -232,37 +243,65 @@ class SecureNRFChat:
 
                 if flags == 0xFF: continue
                 self._send_ack(seq)
-                self.fragments.append(received[2:])
 
-                if flags == 0x01:
-                    total_bytes = b''.join(bytes(f).rstrip(b'\x00') for f in self.fragments)
-                    self.fragments = []
-                    try:
-                        text_clair = self.decrypt(total_bytes)
-                        if self.on_receive: 
-                            self.on_receive(text_clair)
-                    except Exception as e:
-                        print(f"Erreur de déchiffrement radio: {e}")
+                # --- RECEPTION D'UN MESSAGE TEXTE ---
+                if flags in (0x00, 0x01):
+                    self.msg_fragments.append(received[2:])
+                    if flags == 0x01:
+                        total_bytes = b''.join(bytes(f).rstrip(b'\x00') for f in self.msg_fragments)
+                        self.msg_fragments = []
+                        try:
+                            text_clair = self.decrypt(total_bytes)
+                            if self.on_receive: self.on_receive(text_clair)
+                        except Exception as e:
+                            print(f"Erreur de déchiffrement radio: {e}")
+                
+                # --- RECEPTION D'UNE CLÉ RSA (HANDSHAKE) ---
+                elif flags in (0x02, 0x03):
+                    self.key_fragments.append(received[2:])
+                    if flags == 0x03:
+                        total_bytes = b''.join(bytes(f).rstrip(b'\x00') for f in self.key_fragments)
+                        self.key_fragments = []
+                        try:
+                            key_str = total_bytes.decode('utf-8')
+                            e_str, n_str = key_str.split("||")
+                            self.remote_public_key = (int(e_str), int(n_str))
+                            print(f"\n[HANDSHAKE] Clé publique reçue ! Empreinte : {self.get_fingerprint(self.remote_public_key)}")
+                            if self.on_key_received: self.on_key_received()
+                        except Exception as e:
+                            print(f"Erreur Handshake: {e}")
+
             time.sleep(0.01)
 
-    def get_fingerprint(self, key):
-        """Génère l'empreinte visuelle (Hash) d'une clé publique à la manière de WhatsApp"""
-        if not key: 
-            return "EN ATTENTE"
+    def send_public_key(self):
+        """Diffuse la clé publique locale par ondes radio"""
+        if self.radio is None: return
+        print("\n[RADIO] Diffusion de la clé publique (Handshake)...")
+        key_str = f"{self.public_key[0]}||{self.public_key[1]}"
+        data_bytes = key_str.encode('utf-8')
         
-        # La clé est un tuple (e, n). On la transforme en texte pur.
-        key_str = f"{key[0]}||{key[1]}"
-        
-        # On calcule le hash SHA-256
-        hash_complet = hashlib.sha256(key_str.encode('utf-8')).hexdigest()
-        
-        # On garde les 8 premiers caractères et on les met en majuscules pour que ce soit lisible par un humain
-        return hash_complet[:8].upper()
+        max_payload = 30
+        packets = []
+        for i in range(0, len(data_bytes), max_payload):
+            chunk = data_bytes[i:i + max_payload]
+            flags = 0x03 if i + max_payload >= len(data_bytes) else 0x02
+            packet = [self.seq_send, flags] + list(chunk)
+            while len(packet) < 32: packet.append(0)
+            packets.append(packet)
+
+        for pkt in packets:
+            self.radio.stopListening()
+            self.radio.write(pkt)
+            self.radio.startListening()
+            time.sleep(0.02)
+        self.seq_send = (self.seq_send + 1) % 256
+        print("[RADIO] Clé diffusée avec succès.")
 
     def send(self, message: str):
-        if self.radio is None:
-            print("[SIMULATION] Envoi virtuel de :", message)
-            return
+        if self.radio is None: return 0, 1
+        if not self.remote_public_key:
+            print("[ERREUR] Vous devez d'abord synchroniser les clés (Handshake) !")
+            return 1, 1
 
         print(f"\n[RADIO] Préparation de l'envoi : '{message}'")
         data_bytes = self.encrypt(message)
@@ -277,24 +316,11 @@ class SecureNRFChat:
             packets.append(packet)
 
         paquets_perdus = 0
-        paquets_recus = 0
-
         for pkt in packets:
             self.radio.stopListening()
-            # La variable success passe à True SEULEMENT si le NRF24L01 distant a renvoyé un Auto-ACK
-            success = self.radio.write(pkt)
+            if not self.radio.write(pkt): paquets_perdus += 1
             self.radio.startListening()
-            
-            if success:
-                print(f"   -> Fragment {pkt[0]} : Envoyé [ACK Reçu ✅]")
-                paquets_recus += 1
-            else:
-                print(f"   -> Fragment {pkt[0]} : ECHEC [Pas d'ACK ❌, paquet perdu dans les ondes]")
-                paquets_perdus += 1
-
             time.sleep(0.02) 
 
-        print(f"[BILAN] Transmission terminée. {paquets_recus} reçus, {paquets_perdus} perdus.\n")
         self.seq_send = (self.seq_send + 1) % 256
-        # On renvoie les vrais chiffres à Flask
         return paquets_perdus, len(packets)
