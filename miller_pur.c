@@ -5,6 +5,10 @@
 
 // Fonction exportée pour Python
 int miller_rabin_custom_gmp(const char* n_str, int k) {
+
+
+    
+
     // 1. Déclaration de TOUTES les variables GMP nécessaires
     mpz_t n, n_minus_1, d, a, x, range;
     mpz_inits(n, n_minus_1, d, a, x, range, NULL);
