@@ -9,127 +9,58 @@ import os
 import hashlib
 import concurrent.futures
 import multiprocessing
+import platform
 
-# =========================================================
-# -------- IMPORT DE LA LIBRAIRIE C (GMP) -----------------
-# =========================================================
+# --- 1. DÉFINITION DU PONT C/PYTHON ---
+class RSAKeys_C(ctypes.Structure):
+    _fields_ = [
+        ("n", ctypes.c_char_p),
+        ("d", ctypes.c_char_p),
+        ("p", ctypes.c_char_p),
+        ("q", ctypes.c_char_p),
+        ("dp", ctypes.c_char_p),
+        ("dq", ctypes.c_char_p),
+        ("qinv", ctypes.c_char_p)
+    ]
 
-chemin_lib = os.path.join(os.path.dirname(__file__), 'libmiller_custom_gmp.so')
-lib_c = ctypes.CDLL(chemin_lib)
+# --- 2. CHARGEMENT DE LA LIBRAIRIE ---
+# Détection automatique de l'extension selon si on est sur Mac ou sur Raspberry
+ext = ".dylib" if platform.system() == "Darwin" else ".so"
+lib_path = os.path.abspath(f"librsa_bridge{ext}")
 
-lib_c.miller_rabin_custom_gmp.argtypes = [ctypes.c_char_p, ctypes.c_int]
-lib_c.miller_rabin_custom_gmp.restype = ctypes.c_int
+# On charge le code C compilé
+try:
+    c_rsa_lib = ctypes.CDLL(lib_path)
+    c_rsa_lib.generate_rsa_keys_ctypes.restype = RSAKeys_C
+    c_rsa_lib.generate_rsa_keys_ctypes.argtypes = [ctypes.c_int, ctypes.c_int]
+    c_rsa_lib.free_rsa_keys_ctypes.argtypes = [RSAKeys_C]
+except OSError:
+    print(f"[ERREUR FATALE] Impossible de trouver la librairie compilée {lib_path}")
+    print("Avez-vous bien exécuté la commande 'gcc -shared ...' ?")
+    exit(1)
 
-def test_miller_rabin(n, k=40):
-    n_bytes = str(n).encode('utf-8')
-    resultat = lib_c.miller_rabin_custom_gmp(n_bytes, k)
-    return resultat == 1
-
-# =========================================================
-# -------- FONCTIONS DE CRYPTOGRAPHIE CUSTOM --------------
-# =========================================================
-
-def generer_grand_premier(bits=1024):
-    tentatives = 0
-    #pari_local = Pari() 
-    #pari_local.allocatemem(64 * 10**6) 
-    
-    while True:
-        candidat = secrets.randbits(bits)
-        candidat |= (1 << (bits - 1)) 
-        candidat |= 1 
-        tentatives += 1
-
-        if test_miller_rabin(candidat, k=40):
-            print(f" -> [STATS] Miller-Rabin C a rejeté {tentatives - 1} nombres composés.")
-            return candidat
-            #if candidat.bit_length() == bits:
-                #premier = str(candidat)
-                #N = pari_local(premier)
-                
-                #if pari_local.isprime(N) == 1:
-                    #print(" -> [STATS] PARI a confirmé ! C'est un vrai premier.\n")
-                    #return candidat
-
-def pgcd(a, b):
-    while b: a, b = b, a % b
-    return a
-
-def inverse_modulaire(a, m):
-    m0 = m
-    y = 0
-    x = 1
-    if m == 1: return 0
-
-    while a > 1:
-        if m == 0: break 
-        q = a // m
-        t = m
-        m = a % m
-        a = t
-        t = y
-        y = x - q * y
-        x = t
-
-    if x < 0: x = x + m0
-    return x
-
-def worker_recherche_premier(taille_bits, queue):
-    try:
-        # On lance la recherche classique
-        premier = generer_grand_premier(taille_bits)
-        # On met le résultat dans le "tuyau" (Queue) partagé
-        queue.put(premier)
-    except Exception:
-        pass
-
-
+# --- 3. LA NOUVELLE FONCTION PYTHON ULTRA RAPIDE ---
 def generer_cles_bavardes(taille_bits):
     nb_coeurs = os.cpu_count() or 4
-    print(f" -> [MULTICORE] Lancement agressif : {nb_coeurs} cœurs sur la ligne de départ...")
+    print(f" -> [CTYPES] Exécution native C sur {nb_coeurs} cœurs pour {taille_bits*2} bits...")
     
-    # Un "tuyau" de communication thread-safe pour récupérer les résultats
-    queue = multiprocessing.Queue()
-    processus_actifs = []
+    # 1. On lance le calcul en C (ça va prendre quelques millisecondes/secondes)
+    keys_struct = c_rsa_lib.generate_rsa_keys_ctypes(taille_bits, nb_coeurs)
     
-    # 1. On lâche les loups
-    for _ in range(nb_coeurs):
-        p = multiprocessing.Process(target=worker_recherche_premier, args=(taille_bits, queue))
-        p.start()
-        processus_actifs.append(p)
-        
-    primes_found = []
-    
-    # 2. On attend sagement à la sortie du tuyau
-    while len(primes_found) < 2:
-        # L'exécution bloque ici jusqu'à ce qu'un coeur pousse un nombre dans le tuyau
-        candidat = queue.get() 
-        if candidat not in primes_found:
-            primes_found.append(candidat)
-            print(f"    [+] Victoire d'un cœur ! ({len(primes_found)}/2)")
-
-    # 3. L'EXECUTION SYSTÈME (On tire la prise des retardataires)
-    for p in processus_actifs:
-        p.terminate() # Envoie un SIGTERM brutal au système d'exploitation
-        p.join()      # Attend la confirmation de la mort du processus
-        
-    print(" -> [MULTICORE] Les retardataires ont été coupés. Calcul de la clé RSA...")
-    
-    # On assigne p et q avec nos deux gagnants
-    p = primes_found[0]
-    q = primes_found[1]
-    
-    n = p * q
-    phi = (p - 1) * (q - 1)
+    # 2. On convertit les chaînes de caractères (C) en vrais nombres (Python)
     e = 65537
+    n = int(keys_struct.n.decode('utf-8'))
+    d = int(keys_struct.d.decode('utf-8'))
+    p = int(keys_struct.p.decode('utf-8'))
+    q = int(keys_struct.q.decode('utf-8'))
+    dp = int(keys_struct.dp.decode('utf-8'))
+    dq = int(keys_struct.dq.decode('utf-8'))
+    qinv = int(keys_struct.qinv.decode('utf-8'))
     
-    while pgcd(e, phi) != 1: e = secrets.randbelow(3, phi, 2)
-
-    d = inverse_modulaire(e, phi)
+    # 3. ON ORDONNE AU C DE VIDER LA RAM (Critique !)
+    c_rsa_lib.free_rsa_keys_ctypes(keys_struct)
     
-    dp = d % (p - 1)
-    dq = d % (q - 1)
-    qinv = inverse_modulaire(q, p)
+    print(" -> [CTYPES] Clés RSA générées et mémoire libérée avec succès.")
     
     cle_publique = (e, n)
     cle_privee = (d, n, p, q, dp, dq, qinv)

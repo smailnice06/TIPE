@@ -39,7 +39,7 @@ def handle_connect():
 
 @app.route("/api/run_benchmark")
 def run_benchmark():
-    tailles_a_tester = [128, 256, 512, 1024, 2048]
+    tailles_a_tester = [128, 256, 512, 1024, 2048, 4096]
     message_test = "TIPE 2026 - Test!"
     resultats = []
     
