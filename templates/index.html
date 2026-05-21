@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TIPE RSA/NRF24 - Smail Mehbali</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0b0b13; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .neon-text-cyan { color: #00ffcc; text-shadow: 0 0 10px rgba(0, 255, 204, 0.3); }
+        .neon-text-pink { color: #ff007f; text-shadow: 0 0 10px rgba(255, 0, 127, 0.3); }
+        .neon-border-cyan { border: 1px solid #00ffcc; box-shadow: 0 0 15px rgba(0, 255, 204, 0.1); }
+        .neon-border-pink { border: 1px solid #ff007f; box-shadow: 0 0 15px rgba(255, 0, 127, 0.1); }
+        
+        .card { background-color: #1e293b; border-radius: 0.5rem; padding: 1.5rem; }
+        .loader { border: 4px solid rgba(0, 255, 204, 0.1); border-left-color: #00ffcc; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; display: none; margin: 0 auto;}
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Styles Spécifiques Chat */
+        #cipher-messages, #clear-messages { height: 250px; overflow-y: auto; border-radius: 8px; padding: 15px; }
+        #cipher-messages { background: #05050a; font-family: monospace; font-size: 0.85em; color: #00ff00; word-wrap: break-word; }
+        #clear-messages { background: #1e293b; color: #fff; }
+        .cipher-block { margin-bottom: 15px; border-left: 2px solid #00ff00; padding-left: 10px; }
+        .clear-msg { margin-bottom: 10px; padding: 10px; border-radius: 8px; background: #334155; }
+        
+        /* Styles Oscilloscope */
+        .canvas-container { width: 100%; height: 150px; background: #000; border-radius: 5px; overflow: hidden; cursor: grab; }
+        .canvas-container:active { cursor: grabbing; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        /* Onglets */
+        .tab-btn { opacity: 0.5; transition: all 0.3s; }
+        .tab-btn.active { opacity: 1; border-bottom: 2px solid #00ffcc; }
+        .tab-content { display: none; animation: fadeIn 0.5s; }
+        .tab-content.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8 border-b border-gray-800 pb-4">
+            <h1 class="text-3xl font-bold neon-text-cyan uppercase tracking-wider mb-4">Système Embarqué NRF24/RSA</h1>
+            <nav class="flex gap-6 overflow-x-auto">
+                <button onclick="switchTab('chat')" id="btn-chat" class="tab-btn active text-xl font-semibold pb-2 text-white whitespace-nowrap">
+                    <i class="fas fa-satellite-dish text-[#00ffcc]"></i> Simulateur Radio
+                </button>
+                <button onclick="switchTab('benchmark')" id="btn-benchmark" class="tab-btn text-xl font-semibold pb-2 text-white whitespace-nowrap">
+                    <i class="fas fa-chart-line text-[#ff007f]"></i> Benchmark Matériel
+                </button>
+                <button onclick="switchTab('net')" id="btn-net" class="tab-btn text-xl font-semibold pb-2 text-white whitespace-nowrap">
+                    <i class="fas fa-wifi text-yellow-500"></i> État Réseau NRF24
+                </button>
+            </nav>
+        </header>
+
+        <div id="tab-chat" class="tab-content active">
+            
+            <div class="card border border-gray-700 bg-gray-800/50 mb-6 flex flex-col md:flex-row justify-between items-center p-4">
+                <div class="mb-4 md:mb-0">
+                    <h3 class="text-[#00ffcc] font-bold text-lg"><i class="fas fa-shield-alt"></i> Chiffrement de bout en bout</h3>
+                    <p class="text-sm text-gray-400">Vérifiez visuellement ces empreintes RSA avec votre contact pour contrer les attaques Man-in-the-Middle.</p>
+                </div>
+                <div class="text-right font-mono text-sm bg-gray-900 p-3 rounded border border-gray-700">
+                    <div class="mb-1">Mon code : <span id="hash-local" class="text-[#00ffcc] font-bold tracking-widest text-lg ml-2">CHARGEMENT</span></div>
+                    <div>Contact : <span id="hash-distant" class="text-[#ff007f] font-bold tracking-widest text-lg ml-2">EN ATTENTE</span></div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="card neon-border-cyan">
+                    <h2 class="text-xl font-bold text-white mb-4 border-b border-gray-700 pb-2"><i class="fas fa-user"></i> Panneau Utilisateur (Clair)</h2>
+                    <div id="clear-messages" class="mb-4"></div>
+                    <form id="chatForm" class="flex gap-2">
+                        <input type="text" id="pseudo" placeholder="Prénom" required class="w-1/4 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-[#00ffcc]">
+                        <input type="text" id="message" placeholder="Message..." required class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-[#00ffcc]">
+                        <button type="submit" class="bg-[#00ffcc] text-black font-bold px-4 py-2 rounded hover:bg-[#00ccaa] transition"><i class="fas fa-paper-plane"></i></button>
+                    </form>
+                </div>
+
+                <div class="card border border-gray-700">
+                    <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                        <h2 class="text-xl font-bold neon-text-cyan"><i class="fas fa-lock"></i> Interception Trame RSA</h2>
+                        <div class="text-xs text-gray-400">
+                            Pertes: <span id="val-loss" class="text-red-500 font-bold">0%</span> | 
+                            Retry: <span id="val-retry" class="text-yellow-500 font-bold">0</span>
+                        </div>
+                    </div>
+                    <div id="cipher-messages"></div>
+                </div>
+            </div>
+
+            <div class="card neon-border-pink mt-6 p-4">
+                <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                    <h2 class="text-xl font-bold neon-text-pink"><i class="fas fa-wave-square"></i> Oscilloscope GFSK</h2>
+                    <div class="flex gap-2">
+                        <button id="btn-zoom-out" class="bg-gray-800 text-[#ff007f] px-3 py-1 rounded hover:bg-[#ff007f] hover:text-white transition"><i class="fas fa-search-minus"></i></button>
+                        <button id="btn-zoom-in" class="bg-gray-800 text-[#ff007f] px-3 py-1 rounded hover:bg-[#ff007f] hover:text-white transition"><i class="fas fa-search-plus"></i></button>
+                        <button id="btn-reset" class="bg-gray-800 text-white px-3 py-1 rounded hover:bg-gray-600 transition"><i class="fas fa-sync"></i></button>
+                    </div>
+                </div>
+                <div class="canvas-container" id="canvasContainer">
+                    <canvas id="gfskCanvas" width="1200" height="150"></canvas>
+                </div>
+                <div id="signalInfo" class="text-center text-[#ff007f] font-mono text-sm mt-2">En attente de signal...</div>
+            </div>
+        </div>
+
+        <div id="tab-benchmark" class="tab-content">
+            <div class="flex justify-between items-center mb-6">
+                <p class="text-gray-400">Analyse des performances du processeur et de l'optimisation CRT.</p>
+                <button id="runBtn" onclick="runBenchmark()" class="bg-transparent neon-border-pink text-[#ff007f] hover:bg-[#ff007f] hover:text-[#0b0b13] transition-all duration-300 font-bold py-2 px-6 rounded-lg flex items-center gap-2">
+                    <i class="fas fa-cogs"></i> Lancer l'analyse
+                </button>
+            </div>
+
+            <div id="loadingArea" class="text-center py-20 hidden">
+                <div class="loader mb-4 block border-l-[#ff007f]"></div>
+                <p class="text-[#ff007f] animate-pulse">Exécution de l'algorithme C/GMP en cours...</p>
+            </div>
+
+            <div id="dashboardArea" class="hidden">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6" id="cardsContainer"></div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="card border border-gray-700">
+                        <h3 class="text-lg font-semibold mb-4 text-[#ff007f]">Latence Déchiffrement (sec)</h3>
+                        <canvas id="decChart"></canvas>
+                    </div>
+                    <div class="card border border-gray-700">
+                        <h3 class="text-lg font-semibold mb-4 text-[#ff007f]">Temps de Génération (sec)</h3>
+                        <canvas id="genChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-net" class="tab-content">
+            <p class="text-gray-400 mb-6">Surveillance de l'état matériel de l'antenne radio sur le port SPI et statistiques de la couche physique (Data Link).</p>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="card border border-gray-700 flex flex-col items-center justify-center min-h-[200px] text-center">
+                    <h3 class="text-gray-400 text-xs mb-4 uppercase tracking-widest">Interface SPI / NRF24</h3>
+                    <i id="icon-nrf" class="fas fa-microchip text-5xl mb-4 text-gray-600 transition-colors"></i>
+                    <div id="status-nrf" class="text-2xl font-bold text-gray-500">Recherche...</div>
+                    <div id="status-mode" class="text-sm text-gray-500 mt-2"></div>
+                </div>
+                
+                <div class="card border border-gray-700 flex flex-col items-center justify-center min-h-[200px] text-center">
+                    <h3 class="text-gray-400 text-xs mb-4 uppercase tracking-widest">Collisions / Pertes (Tx)</h3>
+                    <i class="fas fa-wave-square text-5xl mb-4 text-red-500"></i>
+                    <div id="tab-loss" class="text-4xl font-bold text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.5)]">0%</div>
+                    <div class="text-sm text-gray-500 mt-2">Paquets perdus dans les airs</div>
+                </div>
+
+                <div class="card border border-gray-700 flex flex-col items-center justify-center min-h-[200px] text-center">
+                    <h3 class="text-gray-400 text-xs mb-4 uppercase tracking-widest">Retentatives Auto (ACK)</h3>
+                    <i class="fas fa-sync text-5xl mb-4 text-yellow-500"></i>
+                    <div id="tab-retry" class="text-4xl font-bold text-yellow-500 drop-shadow-[0_0_10px_rgba(234,179,8,0.5)]">0</div>
+                    <div class="text-sm text-gray-500 mt-2">Max. configuré: 15 essais</div>
+                </div>
+            </div>
+            
+            <div class="mt-8 card border-l-4 border-l-[#00ffcc] bg-gray-900/50">
+                <h3 class="text-[#00ffcc] text-lg font-bold mb-2"><i class="fas fa-info-circle"></i> Explication de la Couche Physique (TIPE)</h3>
+                <p class="text-gray-400 leading-relaxed">Ce panneau permet de visualiser les contraintes du canal radio 2.4 GHz. La bibliothèque matérielle du <code>NRF24L01+</code> est configurée (via <code>set_retries(5, 15)</code>) pour envoyer un accusé de réception (ACK) invisible après chaque paquet. Si le signal est brouillé ou l'antenne débranchée, le système bascule automatiquement en "Mode Repli" pour ne pas bloquer l'interface cryptographique.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- GESTION DES ONGLETS ---
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(`btn-${tabName}`).classList.add('active');
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+        }
+
+        // --- GESTION DU CHAT & SOCKET.IO ---
+        const socket = io();
+        const form = document.getElementById("chatForm");
+        const messageInput = document.getElementById("message");
+        const pseudoInput = document.getElementById("pseudo");
+        const clearMessagesDiv = document.getElementById("clear-messages");
+        const cipherMessagesDiv = document.getElementById("cipher-messages");
+
+        // ECOUTEUR : ÉTAT DU MATÉRIEL (Au chargement)
+        socket.on('system_status', d => {
+            const elStat = document.getElementById('status-nrf');
+            const elIcon = document.getElementById('icon-nrf');
+            const elMode = document.getElementById('status-mode');
+            
+            // Mise à jour de l'état matériel
+            if(d.nrf24_connected) {
+                elStat.innerText = "CONNECTÉ";
+                elStat.className = "text-2xl font-bold text-[#00ffcc]";
+                elIcon.className = "fas fa-satellite-dish text-5xl mb-4 text-[#00ffcc] drop-shadow-[0_0_10px_rgba(0,255,204,0.5)]";
+                elMode.innerText = "Liaison SPI active";
+            } else {
+                elStat.innerText = "DÉCONNECTÉ";
+                elStat.className = "text-2xl font-bold text-red-500";
+                elIcon.className = "fas fa-exclamation-triangle text-5xl mb-4 text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.5)]";
+                elMode.innerText = `Mode de repli : ${d.mode}`;
+            }
+
+            // Mise à jour des empreintes de sécurité (NOUVEAU)
+            if(d.empreinte_locale) {
+                document.getElementById('hash-local').innerText = d.empreinte_locale;
+            }
+            if(d.empreinte_distante) {
+                document.getElementById('hash-distant').innerText = d.empreinte_distante;
+            }
+        });
+
+        // ECOUTEUR : SANTÉ DU SIGNAL (Pendant l'envoi)
+        socket.on('signal_health', d => {
+            document.getElementById('val-loss').innerText = d.loss + '%';
+            document.getElementById('val-retry').innerText = d.retry;
+            document.getElementById('tab-loss').innerText = d.loss + '%';
+            document.getElementById('tab-retry').innerText = d.retry;
+        });
+
+        form.addEventListener("submit", (e) => {
+            e.preventDefault();
+            const msg = messageInput.value.trim();
+            const pseudo = pseudoInput.value.trim() || "Anonyme";
+            if(msg){
+                socket.emit("send_message", {message: msg, pseudo: pseudo});
+                messageInput.value = "";
+            }
+        });
+
+        socket.on("new_message", (data) => {
+            const div = document.createElement("div");
+            div.className = "clear-msg";
+            div.innerHTML = `<strong class="text-[#00ffcc]">${data.pseudo} :</strong> ${data.message}`;
+            clearMessagesDiv.appendChild(div);
+            clearMessagesDiv.scrollTop = clearMessagesDiv.scrollHeight;
+        });
+
+        socket.on("radio_waves", (data) => {
+            const div = document.createElement("div");
+            div.className = "cipher-block";
+            div.innerHTML = `[SIG_${data.pseudo.toUpperCase()}]<br>${data.cipher}`;
+            cipherMessagesDiv.appendChild(div);
+            cipherMessagesDiv.scrollTop = cipherMessagesDiv.scrollHeight;
+
+            currentHex = data.cipher;
+            offsetX = 0; 
+            drawGFSK();
+            document.getElementById("signalInfo").innerHTML = `Trame complète chargée. ${currentHex.length * 4} bits générés.`;
+        });
+
+        // --- GESTION DE L'OSCILLOSCOPE ---
+        const canvas = document.getElementById("gfskCanvas");
+        const ctx = canvas.getContext("2d");
+        const container = document.getElementById("canvasContainer");
+        let currentHex = "";
+        let scale = 1.0, offsetX = 0, isDragging = false, lastMouseX = 0;
+
+        function drawGFSK() {
+            if (!currentHex) return;
+            let binaryString = "";
+            for(let i = 0; i < currentHex.length; i++) binaryString += parseInt(currentHex[i], 16).toString(2).padStart(4, '0');
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(offsetX, 0);
+
+            const bitWidth = 40 * scale; 
+            const amplitude = (canvas.height / 2) - 25;
+            const midY = canvas.height / 2;
+
+            ctx.font = "14px monospace";
+            ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+            ctx.strokeStyle = "rgba(255, 0, 127, 0.2)";
+            
+            for (let i = 0; i < binaryString.length; i++) {
+                let startX = i * bitWidth;
+                if (startX + offsetX > -bitWidth && startX + offsetX < canvas.width + bitWidth) {
+                    ctx.beginPath();
+                    ctx.moveTo(startX, 0); ctx.lineTo(startX, canvas.height);
+                    ctx.stroke();
+                    ctx.fillText(binaryString[i], startX + (bitWidth / 2) - 4, 20);
+                }
+            }
+
+            ctx.beginPath();
+            ctx.strokeStyle = "#00ffcc"; 
+            ctx.lineWidth = 2;
+            ctx.moveTo(0, midY);
+
+            let phase = 0;
+            for (let i = 0; i < binaryString.length; i++) {
+                let startX = i * bitWidth;
+                let inView = (startX + offsetX > -bitWidth && startX + offsetX < canvas.width + bitWidth);
+                let bit = binaryString[i] === '1' ? 1 : 0;
+                let cyclesPerBit = bit === 1 ? 3 : 1; 
+                let phaseStep = (Math.PI * 2 * cyclesPerBit) / bitWidth;
+
+                for (let px = 0; px < bitWidth; px++) {
+                    phase += phaseStep;
+                    let x = startX + px;
+                    let y = midY - (Math.sin(phase) * amplitude);
+                    if (inView) ctx.lineTo(x, y);
+                    else ctx.moveTo(x, y); 
+                }
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        container.addEventListener("mousedown", (e) => { isDragging = true; lastMouseX = e.clientX; });
+        window.addEventListener("mouseup", () => { isDragging = false; });
+        window.addEventListener("mousemove", (e) => {
+            if (isDragging) { offsetX += e.clientX - lastMouseX; lastMouseX = e.clientX; drawGFSK(); }
+        });
+        container.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            scale *= (e.deltaY < 0) ? 1.1 : 0.9;
+            drawGFSK();
+        });
+
+        document.getElementById("btn-zoom-in").addEventListener("click", () => { scale *= 1.2; drawGFSK(); });
+        document.getElementById("btn-zoom-out").addEventListener("click", () => { scale *= 0.8; drawGFSK(); });
+        document.getElementById("btn-reset").addEventListener("click", () => { scale = 1.0; offsetX = 0; drawGFSK(); });
+
+        // --- GESTION DU BENCHMARK ---
+        let genChartInstance = null;
+        let decChartInstance = null;
+
+        async function runBenchmark() {
+            const btn = document.getElementById('runBtn');
+            const loading = document.getElementById('loadingArea');
+            const dashboard = document.getElementById('dashboardArea');
+            
+            btn.disabled = true; btn.classList.add('opacity-50');
+            dashboard.classList.add('hidden'); loading.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/api/run_benchmark');
+                const data = await response.json();
+                
+                updateCards(data);
+                updateCharts(data);
+                
+                loading.classList.add('hidden');
+                dashboard.classList.remove('hidden');
+            } catch (error) {
+                alert("Erreur lors du benchmark.");
+            } finally {
+                btn.disabled = false; btn.classList.remove('opacity-50');
+            }
+        }
+
+        function updateCards(data) {
+            const container = document.getElementById('cardsContainer');
+            container.innerHTML = ''; 
+            data.forEach(result => {
+                container.innerHTML += `
+                    <div class="card border border-gray-700">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-2xl font-bold text-white">${result.taille}</h2>
+                            <span class="bg-gray-800 text-xs py-1 px-2 rounded text-[#ff007f]"><i class="fas fa-wifi"></i> ${result.paquets} pckt</span>
+                        </div>
+                        <ul class="space-y-1 text-sm text-gray-400">
+                            <li class="flex justify-between"><span>Gen :</span> <span class="text-white">${result.t_gen} s</span></li>
+                            <li class="flex justify-between"><span>Déchiff :</span> <span class="text-[#00ffcc] font-bold">${result.t_dechiff} s</span></li>
+                        </ul>
+                    </div>
+                `;
+            });
+        }
+
+        function updateCharts(data) {
+            const labels = data.map(d => d.taille);
+            const genTimes = data.map(d => d.t_gen);
+            const decTimes = data.map(d => d.t_dechiff);
+
+            if(decChartInstance) decChartInstance.destroy();
+            decChartInstance = new Chart(document.getElementById('decChart').getContext('2d'), {
+                type: 'line',
+                data: { labels: labels, datasets: [{ label: 'Temps (s)', data: decTimes, borderColor: '#00ffcc', backgroundColor: 'rgba(0, 255, 204, 0.1)', borderWidth: 3, fill: true, tension: 0.4 }] },
+                options: { scales: { y: { beginAtZero: true, grid: { color: '#334155' } }, x: { grid: { display: false } } }, color: '#94a3b8' }
+            });
+
+            if(genChartInstance) genChartInstance.destroy();
+            genChartInstance = new Chart(document.getElementById('genChart').getContext('2d'), {
+                type: 'bar',
+                data: { labels: labels, datasets: [{ label: 'Temps (s)', data: genTimes, backgroundColor: '#ff007f', borderRadius: 4 }] },
+                options: { scales: { y: { beginAtZero: true, grid: { color: '#334155' } }, x: { grid: { display: false } } }, color: '#94a3b8' }
+            });
+        }
+    </script>
+</body>
+</html>
