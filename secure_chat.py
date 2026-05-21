@@ -41,13 +41,14 @@ def generer_grand_premier(bits=1024):
 
         if test_miller_rabin(candidat, k=40):
             print(f" -> [STATS] Miller-Rabin C a rejeté {tentatives - 1} nombres composés.")
-            if candidat.bit_length() == bits:
-                premier = str(candidat)
-                N = pari_local(premier)
+            return candidat
+            #if candidat.bit_length() == bits:
+                #premier = str(candidat)
+                #N = pari_local(premier)
                 
-                if pari_local.isprime(N) == 1:
-                    print(" -> [STATS] PARI a confirmé ! C'est un vrai premier.\n")
-                    return candidat
+                #if pari_local.isprime(N) == 1:
+                    #print(" -> [STATS] PARI a confirmé ! C'est un vrai premier.\n")
+                    #return candidat
 
 def pgcd(a, b):
     while b: a, b = b, a % b
