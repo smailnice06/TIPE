@@ -74,21 +74,42 @@ def inverse_modulaire(a, m):
     return x
 
 def generer_cles_bavardes(taille_bits):
-    print(f" -> [MULTICORE] Lancement de la recherche de p et q en parallèle...")
+    # On détecte automatiquement le nombre de cœurs de la machine (4 sur un Raspberry Pi)
+    nb_coeurs = os.cpu_count() or 4
+    print(f" -> [MULTICORE] Lancement de la meute : {nb_coeurs} cœurs cherchent p et q...")
     
-    # On ouvre un "Pool" de 2 travailleurs (2 cœurs physiques)
-    with concurrent.futures.ProcessPoolExecutor(max_workers=2) as executor:
-        # On donne l'ordre aux deux cœurs de lancer la fonction en même temps
-        future_p = executor.submit(generer_grand_premier, taille_bits)
-        future_q = executor.submit(generer_grand_premier, taille_bits)
+    primes_found = []
+    
+    with concurrent.futures.ProcessPoolExecutor(max_workers=nb_coeurs) as executor:
+        # On lance volontairement plus de tâches qu'il n'y a de cœurs (ex: 8 tâches pour 4 cœurs)
+        # pour s'assurer que si un cœur finit vite, il reprenne immédiatement une nouvelle recherche
+        futures = [executor.submit(generer_grand_premier, taille_bits) for _ in range(nb_coeurs * 2)]
         
-        # On attend que les deux cœurs aient fini leur travail
-        p = future_p.result()
-        q = future_q.result()
+        # as_completed nous donne les résultats dès qu'un cœur a fini, peu importe l'ordre !
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                premier = future.result()
+                
+                # On s'assure de ne pas avoir tiré deux fois le même nombre exact (statistiquement impossible mais prudence)
+                if premier not in primes_found:
+                    primes_found.append(premier)
+                    print(f"    [+] Un cœur a trouvé un nombre premier ! ({len(primes_found)}/2)")
+                
+                # Dès qu'on a nos DEUX nombres (p et q), on arrête tout
+                if len(primes_found) == 2:
+                    # On annule toutes les autres tâches qui étaient dans la file d'attente
+                    for f in futures:
+                        f.cancel()
+                    break # On casse la boucle pour passer à la suite
+                    
+            except Exception as e:
+                print(f"Erreur sur un cœur : {e}")
+
+    # On assigne p et q
+    p = primes_found[0]
+    q = primes_found[1]
     
-    # Sécurité statistique (très rare) : si par miracle les deux cœurs ont trouvé le même
-    while p == q: 
-        q = generer_grand_premier(taille_bits)
+    print(" -> [MULTICORE] p et q validés. Calcul de la clé RSA...")
     
     n = p * q
     phi = (p - 1) * (q - 1)
