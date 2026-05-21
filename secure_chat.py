@@ -30,8 +30,8 @@ def test_miller_rabin(n, k=40):
 
 def generer_grand_premier(bits=1024):
     tentatives = 0
-    pari_local = Pari() 
-    pari_local.allocatemem(64 * 10**6) 
+    #pari_local = Pari() 
+    #pari_local.allocatemem(64 * 10**6) 
     
     while True:
         candidat = secrets.randbits(bits)
